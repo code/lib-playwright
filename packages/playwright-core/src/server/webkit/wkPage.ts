@@ -231,6 +231,7 @@ export class WKPage implements PageDelegate {
     promises.push(session.send('Page.overrideSetting', { setting: 'PointerLockEnabled', value: !contextOptions.isMobile }));
     promises.push(session.send('Page.overrideSetting', { setting: 'InputTypeMonthEnabled', value: contextOptions.isMobile }));
     promises.push(session.send('Page.overrideSetting', { setting: 'InputTypeWeekEnabled', value: contextOptions.isMobile }));
+    promises.push(session.send('Page.overrideSetting', { setting: 'FixedBackgroundsPaintRelativeToDocument', value: contextOptions.isMobile }));
     await Promise.all(promises);
   }
 
@@ -502,16 +503,15 @@ export class WKPage implements PageDelegate {
     if (!frame)
       return;
     const delegate = new WKExecutionContext(this._session, contextPayload.id);
-    let worldName: types.World;
+    let worldName: types.World|null = null;
     if (contextPayload.type === 'normal')
       worldName = 'main';
     else if (contextPayload.type === 'user' && contextPayload.name === UTILITY_WORLD_NAME)
       worldName = 'utility';
-    else
-      return;
     const context = new dom.FrameExecutionContext(delegate, frame, worldName);
     (context as any)[contextDelegateSymbol] = delegate;
-    frame._contextCreated(worldName, context);
+    if (worldName)
+      frame._contextCreated(worldName, context);
     this._contextIdToContext.set(contextPayload.id, context);
   }
 
@@ -766,6 +766,10 @@ export class WKPage implements PageDelegate {
         return false;
       throw error;
     });
+  }
+
+  async requestGC(): Promise<void> {
+    await this._session.send('Heap.gc');
   }
 
   async addInitScript(initScript: InitScript): Promise<void> {
@@ -1112,7 +1116,7 @@ export class WKPage implements PageDelegate {
     const response = request.createResponse(event.response);
     this._page._frameManager.requestReceivedResponse(response);
 
-    if (response.status() === 204) {
+    if (response.status() === 204 && request.request.isNavigationRequest()) {
       this._onLoadingFailed(session, {
         requestId: event.requestId,
         errorText: 'Aborted: 204 No Content',

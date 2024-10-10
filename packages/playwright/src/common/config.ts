@@ -45,6 +45,7 @@ export class FullConfigInternal {
   readonly webServers: NonNullable<FullConfig['webServer']>[];
   readonly plugins: TestRunnerPluginRegistration[];
   readonly projects: FullProjectInternal[] = [];
+  readonly singleTSConfigPath?: string;
   cliArgs: string[] = [];
   cliGrep: string | undefined;
   cliGrepInvert: string | undefined;
@@ -53,6 +54,7 @@ export class FullConfigInternal {
   cliListOnly = false;
   cliPassWithNoTests?: boolean;
   cliFailOnFlakyTests?: boolean;
+  cliLastFailed?: boolean;
   testIdMatcher?: Matcher;
   defineConfigWasUsed = false;
 
@@ -68,6 +70,7 @@ export class FullConfigInternal {
     this.configCLIOverrides = configCLIOverrides;
     const privateConfiguration = (userConfig as any)['@playwright/test'];
     this.plugins = (privateConfiguration?.plugins || []).map((p: any) => ({ factory: p }));
+    this.singleTSConfigPath = pathResolve(configDir, userConfig.tsconfig);
 
     this.config = {
       configFile: resolvedConfigFile,

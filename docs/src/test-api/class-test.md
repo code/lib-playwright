@@ -1319,7 +1319,7 @@ Timeout for the currently running test is available through [`property: TestInfo
   });
   ```
 
-* Changing timeout from a slow `beforeEach` or `afterEach` hook. Note that this affects the test timeout that is shared with `beforeEach`/`afterEach` hooks.
+* Changing timeout from a slow `beforeEach` hook. Note that this affects the test timeout that is shared with `beforeEach` hooks.
 
   ```js
   test.beforeEach(async ({ page }, testInfo) => {
@@ -1709,6 +1709,12 @@ Step body.
 - `box` <boolean>
 
 Whether to box the step in the report. Defaults to `false`. When the step is boxed, errors thrown from the step internals point to the step call site. See below for more details.
+
+### option: Test.step.location
+* since: v1.48
+- `location` <[Location]>
+
+Specifies a custom location for the step to be shown in test reports and trace viewer. By default, location of the [`method: Test.step`] call is shown.
 
 ## method: Test.use
 * since: v1.10

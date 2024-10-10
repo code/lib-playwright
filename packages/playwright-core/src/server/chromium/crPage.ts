@@ -247,6 +247,10 @@ export class CRPage implements PageDelegate {
     return this._go(+1);
   }
 
+  async requestGC(): Promise<void> {
+    await this._mainFrameSession._client.send('HeapProfiler.collectGarbage');
+  }
+
   async addInitScript(initScript: InitScript, world: types.World = 'main'): Promise<void> {
     await this._forAllFrameSessions(frame => frame._evaluateOnNewDocument(initScript, world));
   }
@@ -360,6 +364,8 @@ export class CRPage implements PageDelegate {
   }
 
   async resetForReuse(): Promise<void> {
+    // See https://github.com/microsoft/playwright/issues/22432.
+    await this.rawMouse.move(-1, -1, 'none', new Set(), new Set(), true);
   }
 
   async pdf(options: channels.PagePdfParams): Promise<Buffer> {
@@ -543,7 +549,7 @@ class FrameSession {
       const options = this._crPage._browserContext._options;
       if (options.bypassCSP)
         promises.push(this._client.send('Page.setBypassCSP', { enabled: true }));
-      if (options.ignoreHTTPSErrors)
+      if (options.ignoreHTTPSErrors || options.internalIgnoreHTTPSErrors)
         promises.push(this._client.send('Security.setIgnoreCertificateErrors', { ignore: true }));
       if (this._isMainFrame())
         promises.push(this._updateViewport());
@@ -690,16 +696,15 @@ class FrameSession {
     if (!frame || this._eventBelongsToStaleFrame(frame._id))
       return;
     const delegate = new CRExecutionContext(this._client, contextPayload);
-    let worldName: types.World;
+    let worldName: types.World|null = null;
     if (contextPayload.auxData && !!contextPayload.auxData.isDefault)
       worldName = 'main';
     else if (contextPayload.name === UTILITY_WORLD_NAME)
       worldName = 'utility';
-    else
-      return;
     const context = new dom.FrameExecutionContext(delegate, frame, worldName);
     (context as any)[contextDelegateSymbol] = delegate;
-    frame._contextCreated(worldName, context);
+    if (worldName)
+      frame._contextCreated(worldName, context);
     this._contextIdToContext.set(contextPayload.id, context);
   }
 
@@ -898,7 +903,7 @@ class FrameSession {
     const buffer = Buffer.from(payload.data, 'base64');
     this._page.emit(Page.Events.ScreencastFrame, {
       buffer,
-      timestamp: payload.metadata.timestamp,
+      frameSwapWallTime: payload.metadata.timestamp ? payload.metadata.timestamp * 1000 : undefined,
       width: payload.metadata.deviceWidth,
       height: payload.metadata.deviceHeight,
     });
@@ -1213,7 +1218,7 @@ async function emulateTimezone(session: CRSession, timezoneId: string) {
 const contextDelegateSymbol = Symbol('delegate');
 
 // Chromium reference: https://source.chromium.org/chromium/chromium/src/+/main:components/embedder_support/user_agent_utils.cc;l=434;drc=70a6711e08e9f9e0d8e4c48e9ba5cab62eb010c2
-function calculateUserAgentMetadata(options: channels.BrowserNewContextParams) {
+function calculateUserAgentMetadata(options: types.BrowserContextOptions) {
   const ua = options.userAgent;
   if (!ua)
     return undefined;

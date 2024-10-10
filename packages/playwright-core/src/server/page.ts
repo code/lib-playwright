@@ -31,7 +31,7 @@ import * as accessibility from './accessibility';
 import { FileChooser } from './fileChooser';
 import type { Progress } from './progress';
 import { ProgressController } from './progress';
-import { LongStandingScope, assert, createGuid } from '../utils';
+import { LongStandingScope, assert, createGuid, trimStringWithEllipsis } from '../utils';
 import { ManualPromise } from '../utils/manualPromise';
 import { debugLogger } from '../utils/debugLogger';
 import type { ImageComparatorOptions } from '../utils/comparators';
@@ -45,6 +45,7 @@ import { parseEvaluationResultValue, source } from './isomorphic/utilityScriptSe
 import type { SerializedValue } from './isomorphic/utilityScriptSerializers';
 import { TargetClosedError } from './errors';
 import { asLocator } from '../utils';
+import { helper } from './helper';
 
 export interface PageDelegate {
   readonly rawMouse: input.RawMouse;
@@ -54,6 +55,7 @@ export interface PageDelegate {
   reload(): Promise<void>;
   goBack(): Promise<boolean>;
   goForward(): Promise<boolean>;
+  requestGC(): Promise<void>;
   addInitScript(initScript: InitScript): Promise<void>;
   removeNonInternalInitScripts(): Promise<void>;
   closePage(runBeforeUnload: boolean): Promise<void>;
@@ -430,6 +432,10 @@ export class Page extends SdkObject {
     }), this._timeoutSettings.navigationTimeout(options));
   }
 
+  requestGC(): Promise<void> {
+    return this._delegate.requestGC();
+  }
+
   registerLocatorHandler(selector: string, noWaitAfter: boolean | undefined) {
     const uid = ++this._lastLocatorHandlerUid;
     this._locatorHandlers.set(uid, { selector, noWaitAfter });
@@ -450,7 +456,34 @@ export class Page extends SdkObject {
     this._locatorHandlers.delete(uid);
   }
 
-  async performLocatorHandlersCheckpoint(progress: Progress) {
+  async performActionPreChecks(progress: Progress) {
+    await this._performWaitForNavigationCheck(progress);
+    progress.throwIfAborted();
+    await this._performLocatorHandlersCheckpoint(progress);
+    progress.throwIfAborted();
+    // Wait once again, just in case a locator handler caused a navigation.
+    await this._performWaitForNavigationCheck(progress);
+  }
+
+  private async _performWaitForNavigationCheck(progress: Progress) {
+    if (process.env.PLAYWRIGHT_SKIP_NAVIGATION_CHECK)
+      return;
+    const mainFrame = this._frameManager.mainFrame();
+    if (!mainFrame || !mainFrame.pendingDocument())
+      return;
+    const url = mainFrame.pendingDocument()?.request?.url();
+    const toUrl = url ? `" ${trimStringWithEllipsis(url, 200)}"` : '';
+    progress.log(`  waiting for${toUrl} navigation to finish...`);
+    await helper.waitForEvent(progress, mainFrame, frames.Frame.Events.InternalNavigation, (e: frames.NavigationEvent) => {
+      if (!e.isPublic)
+        return false;
+      if (!e.error)
+        progress.log(`  navigated to "${trimStringWithEllipsis(mainFrame.url(), 200)}"`);
+      return true;
+    }).promise;
+  }
+
+  private async _performLocatorHandlersCheckpoint(progress: Progress) {
     // Do not run locator handlers from inside locator handler callbacks to avoid deadlocks.
     if (this._locatorHandlerRunningCounter)
       return;
@@ -468,7 +501,7 @@ export class Page extends SdkObject {
           progress.throwIfAborted();
           if (!handler.noWaitAfter) {
             progress.log(`  locator handler has finished, waiting for ${asLocator(this.attribution.playwright.options.sdkLanguage, handler.selector)} to be hidden`);
-            await this.mainFrame().waitForSelectorInternal(progress, handler.selector, { state: 'hidden' });
+            await this.mainFrame().waitForSelectorInternal(progress, handler.selector, false, { state: 'hidden' });
           } else {
             progress.log(`  locator handler has finished`);
           }
@@ -554,7 +587,7 @@ export class Page extends SdkObject {
     const rafrafScreenshot = locator ? async (progress: Progress, timeout: number) => {
       return await locator.frame.rafrafTimeoutScreenshotElementWithProgress(progress, locator.selector, timeout, options || {});
     } : async (progress: Progress, timeout: number) => {
-      await this.performLocatorHandlersCheckpoint(progress);
+      await this.performActionPreChecks(progress);
       await this.mainFrame().rafrafTimeout(timeout);
       return await this._screenshotter.screenshotPage(progress, options || {});
     };
@@ -846,6 +879,8 @@ export class PageBinding {
         const handle = await context.evaluateHandle(takeHandle, { name, seq }).catch(e => null);
         result = await binding.playwrightFunction({ frame: context.frame, page, context: page._browserContext }, handle);
       } else {
+        if (!Array.isArray(serializedArgs))
+          throw new Error(`serializedArgs is not an array. This can happen when Array.prototype.toJSON is defined incorrectly`);
         const args = serializedArgs!.map(a => parseEvaluationResultValue(a));
         result = await binding.playwrightFunction({ frame: context.frame, page, context: page._browserContext }, ...args);
       }

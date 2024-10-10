@@ -16,7 +16,7 @@
 
 import readline from 'readline';
 import path from 'path';
-import { createGuid, getPackageManagerExecCommand, ManualPromise } from 'playwright-core/lib/utils';
+import { createGuid, eventsHelper, getPackageManagerExecCommand, ManualPromise } from 'playwright-core/lib/utils';
 import type { ConfigLocation } from '../common/config';
 import type { FullResult } from '../../types/testReporter';
 import { colors } from 'playwright-core/lib/utilsBundle';
@@ -73,8 +73,9 @@ export async function runWatchModeLoop(configLocation: ConfigLocation, initialOp
     return 'restarted';
 
   const options: WatchModeOptions = { ...initialOptions };
+  let bufferMode = false;
 
-  const testServerDispatcher = new TestServerDispatcher(configLocation);
+  const testServerDispatcher = new TestServerDispatcher(configLocation, {});
   const transport = new InMemoryTransport(
       async data => {
         const { id, method, params } = JSON.parse(data);
@@ -94,8 +95,9 @@ export async function runWatchModeLoop(configLocation: ConfigLocation, initialOp
 
   const teleSuiteUpdater = new TeleSuiteUpdater({ pathSeparator: path.sep, onUpdate() { } });
 
+  const dirtyTestFiles = new Set<string>();
   const dirtyTestIds = new Set<string>();
-  let onDirtyTests = new ManualPromise();
+  let onDirtyTests = new ManualPromise<'changed'>();
 
   let queue = Promise.resolve();
   const changedFiles = new Set<string>();
@@ -110,19 +112,22 @@ export async function runWatchModeLoop(configLocation: ConfigLocation, initialOp
       teleSuiteUpdater.processListReport(report);
 
       for (const test of teleSuiteUpdater.rootSuite!.allTests()) {
-        if (changedFiles.has(test.location.file))
+        if (changedFiles.has(test.location.file)) {
+          dirtyTestFiles.add(test.location.file);
           dirtyTestIds.add(test.id);
+        }
       }
-
       changedFiles.clear();
 
-      if (dirtyTestIds.size > 0)
-        onDirtyTests.resolve?.();
+      if (dirtyTestIds.size > 0) {
+        onDirtyTests.resolve('changed');
+        onDirtyTests = new ManualPromise();
+      }
     });
   });
   testServerConnection.onReport(report => teleSuiteUpdater.processTestReportEvent(report));
 
-  await testServerConnection.initialize({ interceptStdio: false, watchTestDirs: true });
+  await testServerConnection.initialize({ interceptStdio: false, watchTestDirs: true, populateDependenciesOnList: true });
   await testServerConnection.runGlobalSetup({});
 
   const { report } = await testServerConnection.listTests({});
@@ -133,25 +138,30 @@ export async function runWatchModeLoop(configLocation: ConfigLocation, initialOp
   let lastRun: { type: 'changed' | 'regular' | 'failed', failedTestIds?: string[], dirtyTestIds?: string[] } = { type: 'regular' };
   let result: FullResult['status'] = 'passed';
 
-  // Enter the watch loop.
-  await runTests(options, testServerConnection);
-
   while (true) {
-    printPrompt();
-    const readCommandPromise = readCommand();
-    await Promise.race([
+    if (bufferMode)
+      printBufferPrompt(dirtyTestFiles, teleSuiteUpdater.config!.rootDir);
+    else
+      printPrompt();
+
+    const waitForCommand = readCommand();
+    const command = await Promise.race([
       onDirtyTests,
-      readCommandPromise,
+      waitForCommand.result,
     ]);
-    if (!readCommandPromise.isDone())
-      readCommandPromise.resolve('changed');
+    if (command === 'changed')
+      waitForCommand.cancel();
+    if (bufferMode && command === 'changed')
+      continue;
 
-    const command = await readCommandPromise;
+    const shouldRunChangedFiles = bufferMode ? command === 'run' : command === 'changed';
+    if (shouldRunChangedFiles) {
+      if (dirtyTestIds.size === 0)
+        continue;
 
-    if (command === 'changed') {
-      onDirtyTests = new ManualPromise();
       const testIds = [...dirtyTestIds];
       dirtyTestIds.clear();
+      dirtyTestFiles.clear();
       await runTests(options, testServerConnection, { testIds, title: 'files changed' });
       lastRun = { type: 'changed', dirtyTestIds: testIds };
       continue;
@@ -237,6 +247,11 @@ export async function runWatchModeLoop(configLocation: ConfigLocation, initialOp
       continue;
     }
 
+    if (command === 'toggle-buffer-mode') {
+      bufferMode = !bufferMode;
+      continue;
+    }
+
     if (command === 'exit')
       break;
 
@@ -251,11 +266,46 @@ export async function runWatchModeLoop(configLocation: ConfigLocation, initialOp
   return result === 'passed' ? teardown.status : result;
 }
 
+function readKeyPress<T extends string>(handler: (text: string, key: any) => T | undefined): { cancel(): void; result: Promise<T> } {
+  const promise = new ManualPromise<T>();
+
+  const rl = readline.createInterface({ input: process.stdin, escapeCodeTimeout: 50 });
+  readline.emitKeypressEvents(process.stdin, rl);
+  if (process.stdin.isTTY)
+    process.stdin.setRawMode(true);
+
+  const listener = eventsHelper.addEventListener(process.stdin, 'keypress', (text: string, key: any) => {
+    const result = handler(text, key);
+    if (result)
+      promise.resolve(result);
+  });
+
+  const cancel = () => {
+    eventsHelper.removeEventListeners([listener]);
+    rl.close();
+    if (process.stdin.isTTY)
+      process.stdin.setRawMode(false);
+  };
+
+  void promise.finally(cancel);
+
+  return { result: promise, cancel };
+}
+
+const isInterrupt = (text: string, key: any) => text === '\x03' || text === '\x1B' || (key && key.name === 'escape') || (key && key.ctrl && key.name === 'c');
+
 async function runTests(watchOptions: WatchModeOptions, testServerConnection: TestServerConnection, options?: {
     title?: string,
     testIds?: string[],
   }) {
   printConfiguration(watchOptions, options?.title);
+
+  const waitForDone = readKeyPress((text: string, key: any) => {
+    if (isInterrupt(text, key)) {
+      testServerConnection.stopTestsNoReply({});
+      return 'done';
+    }
+  });
 
   await testServerConnection.runTests({
     grep: watchOptions.grep,
@@ -266,30 +316,21 @@ async function runTests(watchOptions: WatchModeOptions, testServerConnection: Te
     reuseContext: connectWsEndpoint ? true : undefined,
     workers: connectWsEndpoint ? 1 : undefined,
     headed: connectWsEndpoint ? true : undefined,
-  });
+  }).finally(() => waitForDone.cancel());
 }
 
-function readCommand(): ManualPromise<Command> {
-  const result = new ManualPromise<Command>();
-  const rl = readline.createInterface({ input: process.stdin, escapeCodeTimeout: 50 });
-  readline.emitKeypressEvents(process.stdin, rl);
-  if (process.stdin.isTTY)
-    process.stdin.setRawMode(true);
-
-  const handler = (text: string, key: any) => {
-    if (text === '\x03' || text === '\x1B' || (key && key.name === 'escape') || (key && key.ctrl && key.name === 'c')) {
-      result.resolve('interrupted');
-      return;
-    }
+function readCommand() {
+  return readKeyPress<Command>((text: string, key: any) => {
+    if (isInterrupt(text, key))
+      return 'interrupted';
     if (process.platform !== 'win32' && key && key.ctrl && key.name === 'z') {
       process.kill(process.ppid, 'SIGTSTP');
       process.kill(process.pid, 'SIGTSTP');
     }
     const name = key?.name;
-    if (name === 'q') {
-      result.resolve('exit');
-      return;
-    }
+    if (name === 'q')
+      return 'exit';
+
     if (name === 'h') {
       process.stdout.write(`${separator()}
 Run tests
@@ -303,34 +344,27 @@ Change settings
   ${colors.bold('p')}        ${colors.dim('set file filter')}
   ${colors.bold('t')}        ${colors.dim('set title filter')}
   ${colors.bold('s')}        ${colors.dim('toggle show & reuse the browser')}
+  ${colors.bold('b')}        ${colors.dim('toggle buffer mode')}
 `);
       return;
     }
 
     switch (name) {
-      case 'return': result.resolve('run'); break;
-      case 'r': result.resolve('repeat'); break;
-      case 'c': result.resolve('project'); break;
-      case 'p': result.resolve('file'); break;
-      case 't': result.resolve('grep'); break;
-      case 'f': result.resolve('failed'); break;
-      case 's': result.resolve('toggle-show-browser'); break;
+      case 'return': return 'run';
+      case 'r': return 'repeat';
+      case 'c': return 'project';
+      case 'p': return 'file';
+      case 't': return 'grep';
+      case 'f': return 'failed';
+      case 's': return 'toggle-show-browser';
+      case 'b': return 'toggle-buffer-mode';
     }
-  };
-
-  process.stdin.on('keypress', handler);
-  void result.finally(() => {
-    process.stdin.off('keypress', handler);
-    rl.close();
-    if (process.stdin.isTTY)
-      process.stdin.setRawMode(false);
   });
-  return result;
 }
 
 let showBrowserServer: PlaywrightServer | undefined;
 let connectWsEndpoint: string | undefined = undefined;
-let seq = 0;
+let seq = 1;
 
 function printConfiguration(options: WatchModeOptions, title?: string) {
   const packageManagerCommand = getPackageManagerExecCommand();
@@ -344,15 +378,29 @@ function printConfiguration(options: WatchModeOptions, title?: string) {
     tokens.push(...options.files.map(a => colors.bold(a)));
   if (title)
     tokens.push(colors.dim(`(${title})`));
-  if (seq)
-    tokens.push(colors.dim(`#${seq}`));
-  ++seq;
+  tokens.push(colors.dim(`#${seq++}`));
   const lines: string[] = [];
   const sep = separator();
   lines.push('\x1Bc' + sep);
   lines.push(`${tokens.join(' ')}`);
   lines.push(`${colors.dim('Show & reuse browser:')} ${colors.bold(showBrowserServer ? 'on' : 'off')}`);
   process.stdout.write(lines.join('\n'));
+}
+
+function printBufferPrompt(dirtyTestFiles: Set<string>, rootDir: string) {
+  const sep = separator();
+  process.stdout.write('\x1Bc');
+  process.stdout.write(`${sep}\n`);
+
+  if (dirtyTestFiles.size === 0) {
+    process.stdout.write(`${colors.dim('Waiting for file changes. Press')} ${colors.bold('q')} ${colors.dim('to quit or')} ${colors.bold('h')} ${colors.dim('for more options.')}\n\n`);
+    return;
+  }
+
+  process.stdout.write(`${colors.dim(`${dirtyTestFiles.size} test ${dirtyTestFiles.size === 1 ? 'file' : 'files'} changed:`)}\n\n`);
+  for (const file of dirtyTestFiles)
+    process.stdout.write(` · ${path.relative(rootDir, file)}\n`);
+  process.stdout.write(`\n${colors.dim(`Press`)} ${colors.bold('enter')} ${colors.dim('to run')}, ${colors.bold('q')} ${colors.dim('to quit or')} ${colors.bold('h')} ${colors.dim('for more options.')}\n\n`);
 }
 
 function printPrompt() {
@@ -376,4 +424,4 @@ async function toggleShowBrowser() {
   }
 }
 
-type Command = 'run' | 'failed' | 'repeat' | 'changed' | 'project' | 'file' | 'grep' | 'exit' | 'interrupted' | 'toggle-show-browser';
+type Command = 'run' | 'failed' | 'repeat' | 'changed' | 'project' | 'file' | 'grep' | 'exit' | 'interrupted' | 'toggle-show-browser' | 'toggle-buffer-mode';

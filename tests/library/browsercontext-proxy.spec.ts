@@ -25,10 +25,6 @@ it.beforeEach(({ server }) => {
 });
 
 it('should work when passing the proxy only on the context level', async ({ browserName, platform, browserType, server, proxyServer }) => {
-  // Currently an upstream bug in the network stack of Chromium which leads that
-  // the wrong proxy gets used in the BrowserContext.
-  it.fixme(browserName === 'chromium' && platform === 'win32');
-
   proxyServer.forwardTo(server.PORT);
   let browser;
   try {
@@ -69,7 +65,9 @@ it('should use proxy', async ({ contextFactory, server, proxyServer }) => {
 });
 
 
-it('should set cookie for top-level domain', async ({ contextFactory, server, proxyServer, browserName, isLinux }) => {
+it('should set cookie for top-level domain', {
+  annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/18362' }
+}, async ({ contextFactory, server, proxyServer, browserName, isLinux }) => {
   it.fixme(browserName === 'webkit' && isLinux);
 
   proxyServer.forwardTo(server.PORT, { allowConnectRequests: true });

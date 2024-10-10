@@ -85,7 +85,7 @@ jobs:
     - uses: actions/checkout@v4
     - uses: actions/setup-node@v4
       with:
-        node-version: 18
+        node-version: lts/*
     - name: Install dependencies
       run: npm ci
     - name: Install Playwright Browsers
@@ -208,18 +208,17 @@ jobs:
     name: 'Playwright Tests'
     runs-on: ubuntu-latest
     container:
-      image: mcr.microsoft.com/playwright:v%%VERSION%%-jammy
+      image: mcr.microsoft.com/playwright:v%%VERSION%%-noble
+      options: --user 1001
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 18
+          node-version: lts/*
       - name: Install dependencies
         run: npm ci
       - name: Run your tests
         run: npx playwright test
-        env:
-          HOME: /root
 ```
 
 ```yml python title=".github/workflows/playwright.yml"
@@ -234,7 +233,8 @@ jobs:
     name: 'Playwright Tests'
     runs-on: ubuntu-latest
     container:
-      image: mcr.microsoft.com/playwright/python:v%%VERSION%%-jammy
+      image: mcr.microsoft.com/playwright/python:v%%VERSION%%-noble
+      options: --user 1001
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python
@@ -248,8 +248,6 @@ jobs:
           pip install -e .
       - name: Run your tests
         run: pytest
-        env:
-          HOME: /root
 ```
 
 ```yml java title=".github/workflows/playwright.yml"
@@ -264,7 +262,8 @@ jobs:
     name: 'Playwright Tests'
     runs-on: ubuntu-latest
     container:
-      image: mcr.microsoft.com/playwright/java:v%%VERSION%%-jammy
+      image: mcr.microsoft.com/playwright/java:v%%VERSION%%-noble
+      options: --user 1001
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v3
@@ -275,8 +274,6 @@ jobs:
         run: mvn -B install -D skipTests --no-transfer-progress
       - name: Run tests
         run: mvn test
-        env:
-          HOME: /root
 ```
 
 ```yml csharp title=".github/workflows/playwright.yml"
@@ -291,7 +288,8 @@ jobs:
     name: 'Playwright Tests'
     runs-on: ubuntu-latest
     container:
-      image: mcr.microsoft.com/playwright/dotnet:v%%VERSION%%-jammy
+      image: mcr.microsoft.com/playwright/dotnet:v%%VERSION%%-noble
+      options: --user 1001
     steps:
       - uses: actions/checkout@v4
       - name: Setup dotnet
@@ -301,8 +299,6 @@ jobs:
       - run: dotnet build
       - name: Run your tests
         run: dotnet test
-        env:
-          HOME: /root
 ```
 
 #### On deployment
@@ -323,7 +319,7 @@ jobs:
     - uses: actions/checkout@v4
     - uses: actions/setup-node@v4
       with:
-        node-version: 18
+        node-version: lts/*
     - name: Install dependencies
       run: npm ci
     - name: Install Playwright
@@ -419,7 +415,7 @@ Large test suites can take very long to execute. By executing a preliminary test
 This will give you a faster feedback loop and slightly lower CI consumption while working on Pull Requests.
 To detect test files affected by your changeset, `--only-changed` analyses your suites' dependency graph. This is a heuristic and might miss tests, so it's important that you always run the full test suite after the preliminary test run.
 
-```yml js title=".github/workflows/playwright.yml" {20-23}
+```yml js title=".github/workflows/playwright.yml" {24-26}
 name: Playwright Tests
 on:
   push:
@@ -438,7 +434,7 @@ jobs:
         fetch-depth: 0
     - uses: actions/setup-node@v4
       with:
-        node-version: 18
+        node-version: lts/*
     - name: Install dependencies
       run: npm ci
     - name: Install Playwright Browsers
@@ -770,28 +766,28 @@ Running Playwright on CircleCI is very similar to running on GitHub Actions. In 
 
 ```yml js
 executors:
-  pw-jammy-development:
+  pw-noble-development:
     docker:
       - image: mcr.microsoft.com/playwright:v%%VERSION%%-noble
 ```
 
 ```yml python
 executors:
-  pw-jammy-development:
+  pw-noble-development:
     docker:
       - image: mcr.microsoft.com/playwright/python:v%%VERSION%%-noble
 ```
 
 ```yml java
 executors:
-  pw-jammy-development:
+  pw-noble-development:
     docker:
       - image: mcr.microsoft.com/playwright/java:v%%VERSION%%-noble
 ```
 
 ```yml csharp
 executors:
-  pw-jammy-development:
+  pw-noble-development:
     docker:
       - image: mcr.microsoft.com/playwright/dotnet:v%%VERSION%%-noble
 ```
@@ -805,7 +801,7 @@ Sharding in CircleCI is indexed with 0 which means that you will need to overrid
 
   ```yml
     playwright-job-name:
-      executor: pw-jammy-development
+      executor: pw-noble-development
       parallelism: 4
       steps:
         - run: SHARD="$((${CIRCLE_NODE_INDEX}+1))"; npx playwright test -- --shard=${SHARD}/${CIRCLE_NODE_TOTAL}
@@ -1001,7 +997,7 @@ type: docker
 
 steps:
   - name: test
-    image: mcr.microsoft.com/playwright:v%%VERSION%%-jammy
+    image: mcr.microsoft.com/playwright:v%%VERSION%%-noble
     commands:
       - npx playwright test
 ```

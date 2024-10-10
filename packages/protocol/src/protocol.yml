@@ -287,6 +287,7 @@ APIRequestContext:
     fetch:
       parameters:
         url: string
+        encodedParams: string?
         params:
           type: array?
           items: NameValue
@@ -1159,6 +1160,17 @@ BrowserContext:
               regexSource: string?
               regexFlags: string?
 
+    setWebSocketInterceptionPatterns:
+      parameters:
+        patterns:
+          type: array
+          items:
+            type: object
+            properties:
+              glob: string?
+              regexSource: string?
+              regexFlags: string?
+
     setOffline:
       parameters:
         offline: boolean
@@ -1175,7 +1187,7 @@ BrowserContext:
     pause:
       experimental: True
 
-    recorderSupplementEnable:
+    enableRecorder:
       experimental: True
       parameters:
         language: string?
@@ -1184,6 +1196,11 @@ BrowserContext:
           literals:
           - inspecting
           - recording
+        codegenMode:
+          type: enum?
+          literals:
+          - actions
+          - trace-events
         pauseOnNextStatement: boolean?
         testIdAttributeName: string?
         launchOptions: json?
@@ -1303,6 +1320,10 @@ BrowserContext:
     route:
       parameters:
         route: Route
+
+    webSocketRoute:
+      parameters:
+        webSocketRoute: WebSocketRoute
 
     video:
       parameters:
@@ -1429,6 +1450,8 @@ Page:
         slowMo: true
         snapshot: true
 
+    requestGC:
+
     registerLocatorHandler:
       parameters:
         selector: string
@@ -1507,6 +1530,17 @@ Page:
           items: NameValue
 
     setNetworkInterceptionPatterns:
+      parameters:
+        patterns:
+          type: array
+          items:
+            type: object
+            properties:
+              glob: string?
+              regexSource: string?
+              regexFlags: string?
+
+    setWebSocketInterceptionPatterns:
       parameters:
         patterns:
           type: array
@@ -1767,6 +1801,10 @@ Page:
     route:
       parameters:
         route: Route
+
+    webSocketRoute:
+      parameters:
+        webSocketRoute: WebSocketRoute
 
     video:
       parameters:
@@ -2450,10 +2488,6 @@ JSHandle:
       returns:
         value: SerializedValue
 
-    objectCount:
-      returns:
-        count: number
-
   events:
 
     previewUpdated:
@@ -2908,7 +2942,6 @@ Route:
     abort:
       parameters:
         errorCode: string?
-        requestUrl: string
 
     continue:
       parameters:
@@ -2918,7 +2951,6 @@ Route:
           type: array?
           items: NameValue
         postData: binary?
-        requestUrl: string
         isFallback: boolean
 
     fulfill:
@@ -2931,7 +2963,66 @@ Route:
         body: string?
         isBase64: boolean?
         fetchResponseUid: string?
-        requestUrl: string
+
+
+WebSocketRoute:
+  type: interface
+
+  initializer:
+    url: string
+
+  commands:
+
+    connect:
+
+    ensureOpened:
+
+    sendToPage:
+      parameters:
+        message: string
+        isBase64: boolean
+
+    sendToServer:
+      parameters:
+        message: string
+        isBase64: boolean
+
+    closePage:
+      parameters:
+        code: number?
+        reason: string?
+        wasClean: boolean
+
+    closeServer:
+      parameters:
+        code: number?
+        reason: string?
+        wasClean: boolean
+
+  events:
+
+    messageFromPage:
+      parameters:
+        message: string
+        isBase64: boolean
+
+    messageFromServer:
+      parameters:
+        message: string
+        isBase64: boolean
+
+    closePage:
+      parameters:
+        code: number?
+        reason: string?
+        wasClean: boolean
+
+    closeServer:
+      parameters:
+        code: number?
+        reason: string?
+        wasClean: boolean
+
 
 ResourceTiming:
   type: object
